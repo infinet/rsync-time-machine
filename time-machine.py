@@ -25,9 +25,7 @@ ONEK = 1024.0
 ONEM = 1048576.0
 ONEG = 1073741824.0
 ONET = 1099511627776.0
-
-MIN_SPACE_REQUIREMENT = 1024  # in MB
-MIN_INODES_REQUIREMENT = 100000
+ONEDAY = timedelta(days=1)
 
 # global var
 logfp = None
@@ -38,9 +36,10 @@ KEEP_ALL = 1               # keep all snapshots for last x days
 KEEP_ONE_PER_DAY = 7       # keep one snapshots per day for last x days
 KEEP_ONE_PER_WEEK = 4      # ...
 KEEP_ONE_PER_MONTH = 12    # ...
+MIN_SPACE_REQUIREMENT = 1024  # in MB
+MIN_INODES_REQUIREMENT = 100000
 LOG_FILE = 'time-machine.log'
 
-ONEDAY = timedelta(days=1)
 
 RSYNC_ARGS = (
     '--recursive',
@@ -381,11 +380,11 @@ def smart_remove(snapshots,
         del_snapshots.append(s)
 
     if not del_snapshots:
-        logger('[smart remove] no snapshot to remove')
+        logger('[Smart remove] no snapshot to remove')
         return
 
     for s in del_snapshots:
-        logger('[smart remove] delete snapshot %s' % s)
+        logger('[Smart remove] delete snapshot %s' % s)
         shutil.rmtree(s)
 
 
@@ -396,31 +395,57 @@ def get_config(conf):
                                           allow_no_value=True)
     config.read(conf)
     cfg = {'dest_path': None,
+           'min_space': MIN_SPACE_REQUIREMENT,
+           'min_inodes': MIN_INODES_REQUIREMENT,
            'keep_all': KEEP_ALL,
            'keep_one_per_day': KEEP_ONE_PER_DAY,
            'keep_one_per_week': KEEP_ONE_PER_WEEK,
            'keep_one_per_month': KEEP_ONE_PER_MONTH
            }
-    source_host = config.get('source', 'host')[0]
-    source_user = config.get('source', 'user')[0]
+    try:
+        source_host = config.get('source', 'host')[0]
+    except ConfigParser.NoOptionError:
+        source_host = None
+
+    try:
+        source_user = config.get('source', 'user')[0]
+    except ConfigParser.NoOptionError:
+        source_user = None
+
     source_paths = config.get('source', 'path')
+
+    if source_host and source_user:  # ssh remote
+        cfg['sources'] = ['%s@%s:%s' % (source_user, source_host, p)
+                          for p in source_paths]
+    elif source_host and not source_user:  # ssh username in .ssh/config
+        cfg['sources'] = ['%s:%s' % (source_host, p)
+                          for p in source_paths]
+    else:  # local path
+        cfg['sources'] = source_paths
+
     cfg['exclude_patterns'] = config.get('exclude', 'pattern')
 
     cfg['dest_path'] = config.get('dest', 'path')[0]
     for k in ('keep_all', 'keep_one_per_day', 'keep_one_per_week',
               'keep_one_per_month'):
-        tmp = config.get('smart_remove', k)[0]
-        if tmp:
-            cfg[k] = int(tmp)
+        try:
+            tmp = config.get('smart_remove', k)[0]
+            if tmp:
+                cfg[k] = int(tmp)
+        except ConfigParser.NoOptionError:
+            pass
+
+    for k in ('min_space', 'min_inodes'):
+        try:
+            tmp = config.get('free space', k)[0]
+            if tmp:
+                cfg[k] = int(tmp)
+        except ConfigParser.NoOptionError:
+            pass
+
     m = md5()
     m.update(cfg['dest_path'])
     cfg['lock_file'] = '/tmp/time-machine-%s.lock' % m.hexdigest()
-
-    if source_host:  # ssh remote
-        cfg['sources'] = ['%s@%s:%s' % (source_user, source_host, p)
-                          for p in source_paths]
-    else:                   # local path
-        cfg['sources'] = source_paths
 
     if not os.path.exists(cfg['dest_path']):
         os.makedirs(cfg['dest_path'])
@@ -479,17 +504,17 @@ def check_freespace(stat):
     ''' abort backup if not enough free space or inodes '''
     inodes_free = stat.f_favail
     space_free = stat.f_bavail * stat.f_bsize / ONEM
-    if inodes_free < MIN_INODES_REQUIREMENT:
+    if inodes_free < cfg['min_inodes']:
         logger('Error: not enough inodes, the backup filesystem has %d free '
                'inodes, the minimum requirement is %d'
-               % (inodes_free, MIN_INODES_REQUIREMENT))
+               % (inodes_free, cfg['min_inodes']))
         logger('Backup task aborted!')
         sys.exit(2)
 
-    if space_free < MIN_SPACE_REQUIREMENT:
+    if space_free < cfg['min_space']:
         logger('Error: not enough space, the backup filesystem has %.0f MB '
                'free space, the minimum requirement is %d MB'
-               % (space_free, MIN_SPACE_REQUIREMENT))
+               % (space_free, cfg['min_space']))
         logger('Backup task aborted!')
         sys.exit(2)
 
