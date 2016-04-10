@@ -432,7 +432,7 @@ def get_config(conf):
             tmp = config.get('smart_remove', k)[0]
             if tmp:
                 cfg[k] = int(tmp)
-        except ConfigParser.NoOptionError:
+        except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
             pass
 
     for k in ('min_space', 'min_inodes'):
@@ -440,7 +440,7 @@ def get_config(conf):
             tmp = config.get('free space', k)[0]
             if tmp:
                 cfg[k] = int(tmp)
-        except ConfigParser.NoOptionError:
+        except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
             pass
 
     m = md5()
