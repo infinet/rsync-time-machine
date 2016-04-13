@@ -12,7 +12,6 @@ __version__ = '0.0.2'
 
 import os
 import sys
-import time
 import fcntl
 import subprocess
 import shutil
@@ -487,30 +486,35 @@ def humanize_inodes(n):
 
 
 def print_fs_stat(stat):
-    inodes_free = stat.f_favail
-    inodes_used = (stat.f_files - stat.f_favail) * 100.0 / stat.f_files
-
     space_free = stat.f_bavail * stat.f_bsize
     space_total = stat.f_blocks * stat.f_bsize
     space_used = (space_total - space_free) * 100.0 / space_total
-
     logger('    free space: %s, %.1f%% used' % (humanize_bytes(space_free),
                                                 space_used))
-    logger('    free inodes: %s, %.1f%% used' % (humanize_inodes(inodes_free),
-                                                 inodes_used))
+    if cfg['check_inodes']:
+        inodes_free = stat.f_favail
+        inodes_used = (stat.f_files - stat.f_favail) * 100.0 / stat.f_files
+        logger('    free inodes: %s, %.1f%% used' % (
+            humanize_inodes(inodes_free), inodes_used))
 
 
 def check_freespace(stat):
     ''' abort backup if not enough free space or inodes '''
-    inodes_free = stat.f_favail
-    space_free = stat.f_bavail * stat.f_bsize / ONEM
-    if inodes_free < cfg['min_inodes']:
-        logger('Error: not enough inodes, the backup filesystem has %d free '
-               'inodes, the minimum requirement is %d'
-               % (inodes_free, cfg['min_inodes']))
-        logger('Backup task aborted!')
-        sys.exit(2)
 
+    # Linux btrfs does not report total and free inodes. Ignore inodes check
+    if stat.f_files == 0:
+        cfg['check_inodes'] = False
+    else:
+        cfg['check_inodes'] = True
+        inodes_free = stat.f_favail
+        if inodes_free < cfg['min_inodes']:
+            logger('Error: not enough inodes, the backup filesystem has %d '
+                   'free inodes, the minimum requirement is %d'
+                   % (inodes_free, cfg['min_inodes']))
+            logger('Backup task aborted!')
+            sys.exit(2)
+
+    space_free = stat.f_bavail * stat.f_bsize / ONEM
     if space_free < cfg['min_space']:
         logger('Error: not enough space, the backup filesystem has %.0f MB '
                'free space, the minimum requirement is %d MB'
