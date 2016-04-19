@@ -94,6 +94,14 @@ job periodically for some time, the backup folder should look like:
     ├── latest -> /my/backup/destination/time-capsule/2016-04-09_10:14:13_GMT
     └── time-machine.log
 
+
+There is also a small tool for comparing snapshots. Files from two snapshots
+that share same inodes are considered unchanged. Execute `make` to compile then
+run:
+
+    cmpdir old-snapshot-directory new-snapshot-directory
+
+
 ### License
 
 See the [LICENSE](LICENSE) file for license rights and limitations (GNU GPL v2).
