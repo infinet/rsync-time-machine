@@ -47,6 +47,8 @@ static inline int is_new_only(int dir_id);
 static inline uint32_t hash_inode(ino_t ino, unsigned int hashsize);
 static int dnode_cmp_size(const void *p1, const void *p2);
 static int dnode_cmp_name(const void *p1, const void *p2);
+void sort_tree(struct d_node ***arry_removed, int *ar_len,
+               struct d_node ***arry_added, int *aa_len, int sortmode);
 void debug_verify_hash(void);
 
 void humanize_bytes(char buf[], int bufsize, unsigned long long n)
@@ -106,7 +108,7 @@ void dir_walk(char *dirpath, int dir_id)
             fprintf(stderr, "Permission denied.\n");
             break;
         case EBADF:
-            fprintf(stderr, "fd is not a valid file descriptor.\n");
+            fprintf(stderr, "fd is not a valid file desar_leniptor.\n");
             break;
         case EMFILE:
             fprintf(stderr, "too many fd used by process.\n");
@@ -183,47 +185,6 @@ static inline uint32_t hash_inode(ino_t ino, unsigned int hashsize)
 }
 
 
-int sort_tree(struct d_node ***res, int sortmode)
-{
-    struct d_node *np;
-    struct d_node **sa;
-    int sa_len;
-    int i, m;
-    sa_len = 0;
-    for (i = 0; i < hashsize; i++)
-        for (np = nodes[i]; np != NULL; np = np->next)
-            sa_len++;
-
-    sa = malloc(sa_len * sizeof(struct d_node **));
-    if (sa == NULL) {
-        fprintf(stderr, "Error: calloc for sort array failed\n");
-        exit(2);
-    }
-    for (i = 0; i < sa_len; i++)
-        sa[i] = NULL;
-
-    m = 0;
-    for (i = 0; i < hashsize; i++)
-        for (np = nodes[i]; np != NULL; np = np->next)
-            sa[m++] = np;
-
-    switch (sortmode) {
-    case SNAME:
-        qsort(sa, sa_len, sizeof(struct d_node **), dnode_cmp_name);
-        break;
-    case SSIZE:
-        qsort(sa, sa_len, sizeof(struct d_node **), dnode_cmp_size);
-        break;
-    default:
-        break;
-    }
-
-    *res = sa;
-
-    return sa_len;
-}
-
-
 static int dnode_cmp_size(const void *p1, const void *p2)
 {
     struct d_node *np1, *np2;
@@ -251,45 +212,101 @@ static int dnode_cmp_name(const void *p1, const void *p2)
 }
 
 
-void print_tree(char *olddir, char *newdir, int sortmode)
+void sort_tree(struct d_node ***arry_removed, int *ar_len,
+               struct d_node ***arry_added, int *aa_len, int sortmode)
 {
-    int i, sa_len;
+    int i, m, n;
     int cr, ca;
-    unsigned long long removed = 0;
-    unsigned long long added = 0;
-    struct d_node *np, **sa;
-    char buf[64];
-
-    sa_len = sort_tree(&sa, sortmode);
+    struct d_node *np, **ar, **aa;
 
     cr = 0;
-    for (i = 0; i < sa_len; i++) {
-        np = sa[i];
-        if (is_old_only(np->dir_id)) {
-            removed += np->f_size;
-            cr++;
-            humanize_bytes(buf, 64, np->f_size);
-            printf("    Removed: %11s  %s\n", buf, np->f_name);
+    ca = 0;
+    for (i = 0; i < hashsize; i++)
+        for (np = nodes[i]; np != NULL; np = np->next) {
+            if (is_old_only(np->dir_id))
+                cr++;
+            else if (is_new_only(np->dir_id))
+                ca++;
         }
+
+    ar = malloc(cr * sizeof(struct d_node **));
+    aa = malloc(ca * sizeof(struct d_node **));
+    if (aa == NULL || ar == NULL) {
+        fprintf(stderr, "Error: malloc for sort array failed\n");
+        exit(2);
+    }
+
+    for (i = 0; i < cr; i++)
+        ar[i] = NULL;
+    for (i = 0; i < ca; i++)
+        aa[i] = NULL;
+
+    m = 0;
+    n = 0;
+    for (i = 0; i < hashsize; i++)
+        for (np = nodes[i]; np != NULL; np = np->next) {
+            if (is_old_only(np->dir_id))
+                ar[m++] = np;
+            else if (is_new_only(np->dir_id))
+                aa[n++] = np;
+        }
+
+    switch (sortmode) {
+    case SNAME:
+        qsort(aa, ca, sizeof(struct d_node **), dnode_cmp_name);
+        qsort(ar, cr, sizeof(struct d_node **), dnode_cmp_name);
+        break;
+    case SSIZE:
+        qsort(aa, ca, sizeof(struct d_node **), dnode_cmp_size);
+        qsort(ar, cr, sizeof(struct d_node **), dnode_cmp_size);
+        break;
+    default:
+        break;
+    }
+
+    *arry_removed = ar;
+    *arry_added = aa;
+    *ar_len = cr;
+    *aa_len = ca;
+}
+
+
+void print_tree(char *olddir, char *newdir, int sortmode)
+{
+    int i;
+    int ar_len, aa_len;
+    unsigned long long removed = 0;
+    unsigned long long added = 0;
+    struct d_node *np;
+    struct d_node **ar, **aa;
+    char buf[64];
+
+    sort_tree(&ar, &ar_len, &aa, &aa_len, sortmode);
+
+    for (i = 0; i < ar_len; i++) {
+        np = ar[i];
+        removed += np->f_size;
+        humanize_bytes(buf, 64, np->f_size);
+        printf("    Removed: %11s  %s\n", buf, np->f_name);
     }
 
     printf("\n-----------------------------------------------------------\n\n");
-    ca = 0;
-    for (i = 0; i < sa_len; i++) {
-        np = sa[i];
-        if (is_new_only(np->dir_id)) {
-            added += np->f_size;
-            ca++;
-            humanize_bytes(buf, 64, np->f_size);
-            printf("    New: %15s  %s\n", buf, np->f_name);
-        }
+
+    for (i = 0; i < aa_len; i++) {
+        np = aa[i];
+        added += np->f_size;
+        humanize_bytes(buf, 64, np->f_size);
+        printf("    New: %15s  %s\n", buf, np->f_name);
     }
 
     printf("\n-----------------------------------------------------------\n");
     humanize_bytes(buf, 64, removed);
-    printf("Removed %5d files from %s, %s\n", cr, olddir, buf);
+    printf("Removed %5d files from %s, %s\n", ar_len, olddir, buf);
     humanize_bytes(buf, 64, added);
-    printf("Added   %5d files to   %s, %s\n", ca, olddir, buf);
+    printf("Added   %5d files to   %s, %s\n", aa_len, olddir, buf);
+
+    free(ar);
+    free(aa);
 }
 
 
