@@ -19,6 +19,8 @@
 #define START_HASHBITS     12
 /* max number of linked list before double the hash table size */
 #define MAX_DEPTH           9
+#define SSIZE               0
+#define SNAME               1
 
 struct d_node {
     ino_t d_ino;
@@ -37,12 +39,14 @@ static unsigned int hashsize = 1 << START_HASHBITS;
 struct d_node *dalloc(char *d_name);
 void add_or_update(struct d_node *dnp);
 void dir_walk(char *dirpath, int dir_id);
-void print_tree(char *olddir, char *newdir);
+void print_tree(char *olddir, char *newdir, int sortmode);
 void upsizing(void);
 void humanize_bytes(char buf[], int bufsize, unsigned long long n);
 static inline int is_old_only(int dir_id);
 static inline int is_new_only(int dir_id);
 static inline uint32_t hash_inode(ino_t ino, unsigned int hashsize);
+static int dnode_cmp_size(const void *p1, const void *p2);
+static int dnode_cmp_name(const void *p1, const void *p2);
 void debug_verify_hash(void);
 
 void humanize_bytes(char buf[], int bufsize, unsigned long long n)
@@ -179,37 +183,105 @@ static inline uint32_t hash_inode(ino_t ino, unsigned int hashsize)
 }
 
 
-void print_tree(char *olddir, char *newdir)
+int sort_tree(struct d_node ***res, int sortmode)
 {
-    int i;
     struct d_node *np;
+    struct d_node **sa;
+    int sa_len;
+    int i, m;
+    sa_len = 0;
+    for (i = 0; i < hashsize; i++)
+        for (np = nodes[i]; np != NULL; np = np->next)
+            sa_len++;
+
+    sa = malloc(sa_len * sizeof(struct d_node **));
+    if (sa == NULL) {
+        fprintf(stderr, "Error: calloc for sort array failed\n");
+        exit(2);
+    }
+    for (i = 0; i < sa_len; i++)
+        sa[i] = NULL;
+
+    m = 0;
+    for (i = 0; i < hashsize; i++)
+        for (np = nodes[i]; np != NULL; np = np->next)
+            sa[m++] = np;
+
+    switch (sortmode) {
+    case SNAME:
+        qsort(sa, sa_len, sizeof(struct d_node **), dnode_cmp_name);
+        break;
+    case SSIZE:
+        qsort(sa, sa_len, sizeof(struct d_node **), dnode_cmp_size);
+        break;
+    default:
+        break;
+    }
+
+    *res = sa;
+
+    return sa_len;
+}
+
+
+static int dnode_cmp_size(const void *p1, const void *p2)
+{
+    struct d_node *np1, *np2;
+
+    np1 = *(struct d_node **)p1;
+    np2 = *(struct d_node **)p2;
+
+    if (np1->f_size < np2->f_size)
+        return -1;
+    else if (np1->f_size == np2->f_size)
+        return 0;
+    else
+        return 1;
+}
+
+
+static int dnode_cmp_name(const void *p1, const void *p2)
+{
+    struct d_node *np1, *np2;
+
+    np1 = *(struct d_node **)p1;
+    np2 = *(struct d_node **)p2;
+
+    return strcmp(np1->f_name, np2->f_name);
+}
+
+
+void print_tree(char *olddir, char *newdir, int sortmode)
+{
+    int i, sa_len;
+    int cr, ca;
     unsigned long long removed = 0;
     unsigned long long added = 0;
-    int cr, ca;
+    struct d_node *np, **sa;
     char buf[64];
 
+    sa_len = sort_tree(&sa, sortmode);
+
     cr = 0;
-    ca = 0;
-    for (i = 0; i < hashsize; i++) {
-        for (np = nodes[i]; np != NULL; np = np->next) {
-            if (is_old_only(np->dir_id)) {
-                removed += np->f_size;
-                cr++;
-                humanize_bytes(buf, 64, np->f_size);
-                printf("    Removed: %11s  %s\n", buf, np->f_name);
-            }
+    for (i = 0; i < sa_len; i++) {
+        np = sa[i];
+        if (is_old_only(np->dir_id)) {
+            removed += np->f_size;
+            cr++;
+            humanize_bytes(buf, 64, np->f_size);
+            printf("    Removed: %11s  %s\n", buf, np->f_name);
         }
     }
 
     printf("\n-----------------------------------------------------------\n\n");
-    for (i = 0; i < hashsize; i++) {
-        for (np = nodes[i]; np != NULL; np = np->next) {
-            if (is_new_only(np->dir_id)) {
-                added += np->f_size;
-                ca++;
-                humanize_bytes(buf, 64, np->f_size);
-                printf("    New: %15s  %s\n", buf, np->f_name);
-            }
+    ca = 0;
+    for (i = 0; i < sa_len; i++) {
+        np = sa[i];
+        if (is_new_only(np->dir_id)) {
+            added += np->f_size;
+            ca++;
+            humanize_bytes(buf, 64, np->f_size);
+            printf("    New: %15s  %s\n", buf, np->f_name);
         }
     }
 
@@ -290,7 +362,6 @@ void upsizing(void)
     }
 
     free(old_nodes);
-    //printf("debug: end upsizing\n");
     return;
 }
 
@@ -323,11 +394,25 @@ void debug_verify_hash(void)
 
 int main(int argc, char *argv[])
 {
-    int i;
+    int i, opt, mode;
+    char *d1, *d2;
 
     if (argc < 3) {
-        printf("Usage: %s old_dir new_dir\n", basename(argv[0]));
+        printf("Usage: %s [-s] old_dir new_dir\n"
+               "    -s: sort output by file size\n"
+               "    defalut sort output by file name\n", basename(argv[0]));
         exit(2);
+    }
+
+    mode = SNAME;
+    while ((opt = getopt(argc, argv, "s")) != -1) {
+        switch (opt) {
+        case 's':
+            mode = SSIZE;
+            break;
+        default:
+            break;
+        }
     }
 
     nodes = malloc(hashsize * sizeof(struct d_node *));
@@ -339,9 +424,11 @@ int main(int argc, char *argv[])
     for (i = 0; i < hashsize; i++)
         nodes[i] = NULL;
 
-    dir_walk(argv[1], OLDDIR);   /* dir to compare with */
-    dir_walk(argv[2], NEWDIR);   /* new dir */
-    print_tree(argv[1], argv[2]);
+    d1 = argv[argc - 2];
+    d2 = argv[argc - 1];
+    dir_walk(d1, OLDDIR);   /* dir to compare with */
+    dir_walk(d2, NEWDIR);   /* new dir */
+    print_tree(d1, d2, mode);
 
     return 0;
 }
